@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ECG Live Triple Graph - Swappable</title>
+
+<style>
+    body {
+        font-family: Arial, sans-serif;
+        background: #f7f7f7;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 20px;
+    }
+    h1 { margin-bottom: 10px; }
+    #status {
+        margin-bottom: 20px;
+        padding: 8px 15px;
+        background: #ddd;
+        border-radius: 6px;
+        font-weight: bold;
+    }
+    .btn-container {
+        display: flex;
+        gap: 15px;
+        margin-bottom: 20px;
+    }
+    button {
+        padding: 10px 18px;
+        font-size: 15px;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        background: #007bff;
+        color: white;
+        transition: background 0.2s;
+    }
+    button.active {
+        background: #0056b3; 
+    }
+    .triple-chart-layout {
+        display: flex;
+        flex-direction: column; 
+        gap: 20px;
+        width: 850px; 
+    }
+    .chart-container {
+        background: #fff;
+        padding: 10px;
+        border-radius: 8px;
+        box-shadow: 0 0 15px rgba(0,0,0,0.08);
+        height: 300px;
+        width: 100%;
+    }
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+<h1>ECG Live Viewer - 3 Leads</h1>
+<div id="status">Connecting...</div>
+
+<div class="btn-container">
+    <button id="btnLead1" onclick="selectLead('lead1')">Lead I</button>
+    <button id="btnLead2" onclick="selectLead('lead2')">Lead II</button>
+    <button id="btnLead3" onclick="selectLead('lead3')">Lead III</button>
+</div>
+
+<div class="triple-chart-layout">
+    <div class="chart-container">
+        <canvas id="ecgChart1"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="ecgChart2"></canvas>
+    </div>
+    <div class="chart-container">
+        <canvas id="ecgChart3"></canvas>
+    </div>
+</div>
+
+
+<script>
+    const ws = new WebSocket("ws://10.145.119.253:81/");
+    const statusBox = document.getElementById("status");
+
+    ws.onopen = () => {
+        statusBox.innerText = "Connected ✔";
+        statusBox.style.background = "#c6f6c6";
+        selectLead('lead1'); 
+    };
+    ws.onerror = () => {
+        statusBox.innerText = "WebSocket Error ❌";
+        statusBox.style.background = "#f6c6c6";
+    };
+    ws.onclose = () => {
+        statusBox.innerText = "Disconnected ❌";
+        statusBox.style.background = "#f6c6c6";
+    };
+
+    const MAX_POINTS = 500;
+    const SMOOTHING_WINDOW = 2; 
+    let activeLead = 'lead1'; 
+
+    const chartData = {
+        'lead1': { labels: [], data: [] },
+        'lead2': { labels: [], data: [] },
+        'lead3': { labels: [], data: [] }
+    };
+
+    const createChart = (ctx, leadName, color) => {
+        return new Chart(ctx, {
+            type: 'line',
+            data: { 
+                labels: chartData[leadName].labels, 
+                datasets: [{
+                    label: leadName.toUpperCase().replace('LEAD', 'Lead '),
+                    data: chartData[leadName].data,
+                    borderWidth: 1.5,
+                    borderColor: color, 
+                    tension: 0.1,
+                    pointRadius: 0
+                }]
+            },
+            options: {
+                animation: false,
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: true } },
+                scales: {
+                    x: { display: false },
+                    y: { 
+                        min: 0, 
+                        max: 1023, 
+                        title: { display: true, text: 'ADC Value' }
+                    }
+                }
+            }
+        });
+    };
+
+    const ecgChart1 = createChart(document.getElementById('ecgChart1').getContext('2d'), 'lead1', '#007bff'); 
+    const ecgChart2 = createChart(document.getElementById('ecgChart2').getContext('2d'), 'lead2', '#dc3545'); 
+    const ecgChart3 = createChart(document.getElementById('ecgChart3').getContext('2d'), 'lead3', '#28a745'); 
+    
+    const chartMap = {
+        'lead1': ecgChart1,
+        'lead2': ecgChart2,
+        'lead3': ecgChart3
+    };
+
+
+    const smoothData = (newValue, dataArray, windowSize) => {
+        const tempArray = [...dataArray, newValue];
+        const startIndex = Math.max(0, tempArray.length - windowSize);
+        const window = tempArray.slice(startIndex);
+        
+        const sum = window.reduce((a, b) => a + b, 0);
+        return sum / window.length;
+    };
+
+
+    // 5. Lead Selection Logic
+    /**
+     * Switches the active lead stream and updates the UI.
+     * @param {string} leadName - 'lead1', 'lead2', or 'lead3'.
+     */
+    function selectLead(leadName) {
+        // 1. Send command to ESP8266
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(leadName);
+        }
+
+        activeLead = leadName;
+
+        document.querySelectorAll('.btn-container button').forEach(btn => {
+            btn.classList.remove('active');
+        });
+        document.getElementById('btn' + leadName.charAt(0).toUpperCase() + leadName.slice(1)).classList.add('active');
+    }
+
+    window.selectLead = selectLead;
+
+
+    ws.onmessage = (event) => {
+        const currentData = chartData[activeLead];
+        const currentChart = chartMap[activeLead];
+        
+        const rawValue = Number(event.data);
+        
+        const smoothedValue = smoothData(rawValue, currentData.data, SMOOTHING_WINDOW);
+        
+        currentData.labels.push("");
+        currentData.data.push(smoothedValue);
+
+        if (currentData.labels.length > MAX_POINTS) {
+            currentData.labels.shift();
+            currentData.data.shift();
+        }
+
+        currentChart.update('none');
+    };
+</script>
+
+</body>
+</html>
